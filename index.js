@@ -1,13 +1,13 @@
-require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
+require("dotenv").config();
+const TelegramBot = require("node-telegram-bot-api");
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
-    console.error("❌ BOT_TOKEN missing in environment variables!");
-    process.exit(1);
+  console.error("❌ BOT_TOKEN missing in environment variables!");
+  process.exit(1);
 }
 
 const bot = new TelegramBot(token); // no polling
@@ -17,17 +17,18 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const URL = process.env.RENDER_URL;
 if (!URL) {
-    console.error("❌ RENDER_URL missing in environment variables!");
-    process.exit(1);
+  console.error("❌ RENDER_URL missing in environment variables!");
+  process.exit(1);
 }
 
 // Store all orders
 const orders = {}; // { chatId: { step, service, details, deadline, status, price } }
+let adminPricingFor = null; // Tracks which user admin is setting price for
 
 // Webhook endpoint
 app.post(`/bot${token}`, (req, res) => {
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
 // Set webhook
@@ -35,12 +36,17 @@ bot.setWebHook(`${URL}/bot${token}`);
 
 // Helper functions
 function getServiceName(num) {
-    return { '1': 'PPT Creation', '2': 'Notes Making', '3': 'Resume Building', '4': 'Assignment Formatting' }[num];
+  return {
+    1: "PPT Creation",
+    2: "Notes Making",
+    3: "Resume Building",
+    4: "Assignment Formatting",
+  }[num];
 }
 
 function createAdminMessage(chatId) {
-    const order = orders[chatId];
-    return `📌 New Order:\nService: ${getServiceName(order.service)}\nDetails: ${order.details}\nDeadline: ${order.deadline}\nUser ID: ${chatId}`;
+  const order = orders[chatId];
+  return `📌 New Order:\nService: ${getServiceName(order.service)}\nDetails: ${order.details}\nDeadline: ${order.deadline}\nUser ID: ${chatId}`;
 }
 
 // ======================
@@ -49,176 +55,512 @@ function createAdminMessage(chatId) {
 
 // /start command
 bot.onText(/\/start/, (msg) => {
-    const chatId = msg.chat.id;
-    orders[chatId] = { step: 'chooseService' };
-    bot.sendMessage(chatId, `👋 Welcome to DeadlineDesk Bot!\n\nChoose a service:\n1️⃣ PPT Creation\n2️⃣ Notes Making\n3️⃣ Resume Building\n4️⃣ Assignment Formatting`);
+  const chatId = msg.chat.id;
+  orders[chatId] = { step: "chooseService" };
+  bot.sendMessage(
+    chatId,
+    `👋 Welcome to DeadlineDesk Bot!\n\nChoose a service:\n1️⃣ PPT Creation\n2️⃣ Notes Making\n3️⃣ Resume Building\n4️⃣ Assignment Formatting`,
+  );
+});
+
+// ======================
+// Admin Interaction and payments (all callback queries)
+// ======================
+bot.on("callback_query", async (callbackQuery) => {
+  const data = callbackQuery.data;
+  const fromId = callbackQuery.from.id.toString();
+  const messageChatId = callbackQuery.message.chat.id;
+  const ADMIN_ID = process.env.ADMIN_ID;
+
+  const isAdmin = ADMIN_ID && fromId === ADMIN_ID;
+
+  try {
+    // =========================
+    // ADMIN: ACCEPT ORDER
+    // =========================
+    if (data.startsWith("accept_")) {
+      if (!isAdmin) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "❌ Only admin can perform this action.",
+          show_alert: true,
+        });
+      }
+
+      const userId = data.split("_")[1];
+      if (!orders[userId]) return;
+
+      orders[userId].step = "setPrice";
+      adminPricingFor = userId;
+
+      await bot.sendMessage(
+        ADMIN_ID,
+        `💰 Enter price for order of User ID: ${userId}`,
+      );
+    }
+
+    // =========================
+    // ADMIN: REJECT ORDER
+    // =========================
+    else if (data.startsWith("reject_")) {
+      if (!isAdmin) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "❌ Only admin can perform this action.",
+          show_alert: true,
+        });
+      }
+
+      const userId = data.split("_")[1];
+      if (!orders[userId]) return;
+
+      orders[userId].step = "rejected";
+
+      await bot.sendMessage(
+        userId,
+        "❌ Sorry, we cannot take this project at this time.",
+      );
+
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: [] },
+        {
+          chat_id: messageChatId,
+          message_id: callbackQuery.message.message_id,
+        },
+      );
+    }
+
+    // =========================
+    // USER: ACCEPT PRICE
+    // =========================
+    else if (data.startsWith("price_accept_")) {
+      const userId = data.split("_")[2];
+      if (fromId !== userId) return;
+
+      if (!orders[userId]) return;
+
+      const amount = orders[userId].price;
+      const upiId = process.env.UPI_ID;
+      const name = process.env.BUSINESS_NAME;
+
+      const upiLink = `upi://pay?pa=${upiId}&pn=${name}&am=${amount}&cu=INR`;
+
+      orders[userId].step = "awaitPayment";
+
+      await bot.sendMessage(
+        userId,
+        `💳 *Payment Details*
+
+Amount: ₹${amount}
+UPI ID: ${upiId}
+
+Click below to pay 👇`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Pay Now", url: upiLink }],
+              [
+                {
+                  text: "Payment Done",
+                  callback_data: `payment_done_${userId}`,
+                },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    // =========================
+    // USER: REJECT PRICE
+    // =========================
+    else if (data.startsWith("price_reject_")) {
+      const userId = data.split("_")[2];
+      if (fromId !== userId) return;
+
+      if (!orders[userId]) return;
+
+      orders[userId].step = "rejected";
+
+      await bot.sendMessage(
+        userId,
+        "❌ You rejected the price. Order cancelled.",
+      );
+    }
+
+    // =========================
+    // USER: PAYMENT DONE
+    // =========================
+    else if (data.startsWith("payment_done_")) {
+      const userId = data.split("_")[2];
+      if (fromId !== userId) return;
+
+      if (!orders[userId]) return;
+
+      orders[userId].step = "waitingScreenshot";
+
+      await bot.sendMessage(
+        userId,
+        "📸 Please send a screenshot of your payment for verification.",
+      );
+    }
+
+    // =========================
+    // ADMIN: APPROVE PAYMENT
+    // =========================
+    else if (data.startsWith("approve_")) {
+      if (!isAdmin) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "❌ Only admin can approve.",
+          show_alert: true,
+        });
+      }
+
+      const userId = data.split("_")[1];
+      if (!orders[userId]) return;
+
+      if (!orders[userId].fullFileId) {
+        return bot.sendMessage(ADMIN_ID, "⚠️ Full file not uploaded yet.");
+      }
+
+      await bot.sendDocument(userId, orders[userId].fullFileId, {
+        caption: "🎉 Payment verified! Here is your completed work.",
+      });
+
+      orders[userId].step = "completed";
+
+      await bot.sendMessage(
+        ADMIN_ID,
+        `✅ Payment approved. Full file sent to ${userId}`,
+      );
+    }
+
+    // =========================
+    // ADMIN: REJECT PAYMENT
+    // =========================
+    else if (data.startsWith("rejectpay_")) {
+      if (!isAdmin) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "❌ Only admin can reject.",
+          show_alert: true,
+        });
+      }
+
+      const userId = data.split("_")[1];
+      if (!orders[userId]) return;
+
+      orders[userId].step = "awaitPayment";
+
+      await bot.sendMessage(
+        userId,
+        "❌ Payment rejected. Please send correct screenshot.",
+      );
+    }
+
+    await bot.answerCallbackQuery(callbackQuery.id);
+  } catch (error) {
+    console.error("Callback error:", error);
+    bot.answerCallbackQuery(callbackQuery.id, {
+      text: "⚠️ Something went wrong.",
+      show_alert: true,
+    });
+  }
 });
 
 // Handle messages
-bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id.toString();
+  const text = msg.text;
+  const ADMIN_ID = process.env.ADMIN_ID;
 
-    // Ignore /start
-    if (text === '/start') return;
+  const isAdmin = ADMIN_ID && userId === ADMIN_ID;
 
-    // Initialize if not exists
-    if (!orders[chatId]) orders[chatId] = { step: 'chooseService' };
+  // =========================
+  // PREVENT NON-TEXT CRASH
+  // =========================
+  if (!text) return;
 
-    const step = orders[chatId].step;
+  // =========================
+  // ADMIN SECTION
+  // =========================
+  if (isAdmin) {
+    // ---- /review command ----
+    if (text === "/review") {
+      const pendingOrders = Object.entries(orders).filter(
+        ([id, order]) => order.step === "pendingReview",
+      );
 
-    // Step 1: Choose service
-    if (step === 'chooseService') {
-        if (['1','2','3','4'].includes(text)) {
-            orders[chatId].service = text;
-            orders[chatId].step = 'getDetails';
-            bot.sendMessage(chatId, `You chose *${getServiceName(text)}*.\nPlease send the topic/details for your task.`, { parse_mode: 'Markdown' });
-        } else {
-            bot.sendMessage(chatId, '❌ Please choose a valid option: 1,2,3,4');
-        }
+      if (pendingOrders.length === 0) {
+        return bot.sendMessage(chatId, "No pending orders.");
+      }
+
+      for (const [id, order] of pendingOrders) {
+        await bot.sendMessage(
+          chatId,
+          `📌 Order from User: ${id}
+Service: ${getServiceName(order.service)}
+Details: ${order.details}
+Deadline: ${order.deadline}`,
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "Accept", callback_data: `accept_${id}` },
+                  { text: "Reject", callback_data: `reject_${id}` },
+                ],
+              ],
+            },
+          },
+        );
+      }
+
+      return;
     }
 
-    // Step 2: Get task details
-    else if (step === 'getDetails') {
-        orders[chatId].details = text;
-        orders[chatId].step = 'getDeadline';
-        bot.sendMessage(chatId, 'Please send the deadline for your task (e.g., 25 Feb 6 PM).');
+    // ---- Admin entering price ----
+    if (adminPricingFor) {
+      const price = parseInt(text);
+
+      if (isNaN(price)) {
+        return bot.sendMessage(chatId, "❌ Please enter a valid number.");
+      }
+
+      const targetUser = adminPricingFor;
+
+      if (!orders[targetUser]) {
+        adminPricingFor = null;
+        return bot.sendMessage(chatId, "⚠️ Order not found.");
+      }
+
+      orders[targetUser].price = price;
+      orders[targetUser].step = "awaitUserApproval";
+
+      await bot.sendMessage(
+        targetUser,
+        `✅ Your order has been accepted!
+Price: ₹${price}
+Do you accept this price?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "Yes, I accept",
+                  callback_data: `price_accept_${targetUser}`,
+                },
+              ],
+              [
+                {
+                  text: "No, I reject",
+                  callback_data: `price_reject_${targetUser}`,
+                },
+              ],
+            ],
+          },
+        },
+      );
+
+      await bot.sendMessage(chatId, `💰 Price sent to User ID: ${targetUser}`);
+
+      adminPricingFor = null; // reset
+      return;
     }
 
-    // Step 3: Get deadline → notify admin
-    else if (step === 'getDeadline') {
-        orders[chatId].deadline = text;
-        orders[chatId].step = 'pendingReview';
-        bot.sendMessage(chatId, '✅ Your order has been received and is under review. You will be notified once we accept it.');
+    return; // Stop admin flow here
+  }
 
-        // Notify admin
-        if (process.env.ADMIN_ID) {
-            bot.sendMessage(process.env.ADMIN_ID, createAdminMessage(chatId), {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: 'Accept', callback_data: `accept_${chatId}` },
-                            { text: 'Reject', callback_data: `reject_${chatId}` }
-                        ]
-                    ]
-                }
-            });
-        }
+  // =========================
+  // USER SECTION
+  // =========================
+
+  if (text === "/start") {
+    orders[chatId] = { step: "chooseService" };
+    return bot.sendMessage(
+      chatId,
+      `👋 Welcome to DeadlineDesk Bot!
+
+Choose a service:
+1️⃣ PPT Creation
+2️⃣ Notes Making
+3️⃣ Resume Building
+4️⃣ Assignment Formatting`,
+    );
+  }
+
+  if (!orders[chatId]) {
+    return bot.sendMessage(chatId, "Type /start to begin.");
+  }
+
+  const step = orders[chatId].step;
+
+  // Step 1: Choose Service
+  if (step === "chooseService") {
+    if (["1", "2", "3", "4"].includes(text)) {
+      orders[chatId].service = text;
+      orders[chatId].step = "getDetails";
+
+      return bot.sendMessage(
+        chatId,
+        `You chose *${getServiceName(text)}*.
+Please send the topic/details (clear description of the project helps the better results). `,
+        { parse_mode: "Markdown" },
+      );
     }
 
-    // Payment confirmation (manual trigger)
-    else if (text.toLowerCase() === 'payment done') {
-        if (orders[chatId] && orders[chatId].step === 'awaitPayment') {
-            const fullFiles = fs.readdirSync(path.join(__dirname, 'files/full'));
-            fullFiles.forEach(file => {
-                bot.sendDocument(chatId, path.join(__dirname, 'files/full', file), { caption: '🎉 Here is your full completed work!' });
-            });
-            bot.sendMessage(chatId, 'Thank you for your payment! Your order is complete.');
-            orders[chatId].step = 'completed';
-        }
-    }
-});
+    return bot.sendMessage(chatId, "❌ Please choose 1, 2, 3, or 4.");
+  }
 
-// ======================
-// Admin Interaction (Accept/Reject + Price)
-// ======================
+  // Step 2: Get Details
+  if (step === "getDetails") {
+    orders[chatId].details = text;
+    orders[chatId].step = "getDeadline";
 
-bot.on('callback_query', (callbackQuery) => {
-    const data = callbackQuery.data;
-    const adminId = callbackQuery.from.id;
-    const chatId = callbackQuery.message.chat.id;
+    return bot.sendMessage(
+      chatId,
+      "Please send the deadline (e.g., 25 Feb 6 PM). Try to write specific date and time.",
+    );
+  }
 
-    // Only allow ADMIN_ID to accept/reject
-    if (process.env.ADMIN_ID && adminId.toString() !== process.env.ADMIN_ID) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: '❌ You are not authorized.' });
-        return;
-    }
+  // Step 3: Get Deadline
+  if (step === "getDeadline") {
+    orders[chatId].deadline = text;
+    orders[chatId].step = "pendingReview";
 
-    // Parse callback
-    if (data.startsWith('accept_')) {
-        const userId = data.split('_')[1];
-        orders[userId].step = 'setPrice';
-        bot.sendMessage(adminId, `Enter the price for order of User ID: ${userId}`);
-    }
+    await bot.sendMessage(chatId, "✅ Your order is under review. We will notify you once it will approved. Thank you for your support and patience.");
 
-    else if (data.startsWith('reject_')) {
-        const userId = data.split('_')[1];
-        orders[userId].step = 'rejected';
-        bot.sendMessage(userId, '❌ Sorry, we cannot take this project at this time. You may contact us for future tasks.');
-        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: callbackQuery.message.message_id });
-    }
-});
-
-// Admin enters price → send to client
-bot.on('message', (msg) => {
-    const adminId = msg.from.id;
-    if (process.env.ADMIN_ID && adminId.toString() === process.env.ADMIN_ID) {
-        // Find any order in setPrice step
-        const pendingPriceOrder = Object.entries(orders).find(([uid, order]) => order.step === 'setPrice');
-        if (pendingPriceOrder) {
-            const [userId, order] = pendingPriceOrder;
-            const price = parseInt(msg.text);
-            if (isNaN(price)) {
-                bot.sendMessage(adminId, '❌ Please enter a valid number for price.');
-                return;
-            }
-
-            orders[userId].price = price;
-            orders[userId].step = 'awaitUserApproval';
-
-            // Send price proposal to client
-            bot.sendMessage(userId, `✅ Your order has been accepted!\nPrice: ₹${price}\nDo you accept this price?`, {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Yes, I accept', callback_data: `price_accept_${userId}` }],
-                        [{ text: 'No, I reject', callback_data: `price_reject_${userId}` }]
-                    ]
-                }
-            });
-
-            bot.sendMessage(adminId, `Price proposal sent to User ID: ${userId}`);
-        }
-    }
-});
-
-// Handle price approval/rejection
-bot.on('callback_query', (callbackQuery) => {
-    const data = callbackQuery.data;
-    const chatId = callbackQuery.message.chat.id;
-
-    if (data.startsWith('price_accept_')) {
-        const userId = data.split('_')[2];
-        orders[userId].step = 'awaitPayment';
-        bot.sendMessage(userId, '🎉 Price accepted! You can now send payment. After payment, you will receive the full work.');
-        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: callbackQuery.message.message_id });
+    if (ADMIN_ID) {
+      await bot.sendMessage(ADMIN_ID, createAdminMessage(chatId), {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "Accept", callback_data: `accept_${chatId}` },
+              { text: "Reject", callback_data: `reject_${chatId}` },
+            ],
+          ],
+        },
+      });
     }
 
-    else if (data.startsWith('price_reject_')) {
-        const userId = data.split('_')[2];
-        orders[userId].step = 'rejected';
-        bot.sendMessage(userId, '❌ You rejected the price. Order cancelled.');
-        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: callbackQuery.message.message_id });
-    }
+    return;
+  }
 });
 
 // ======================
 // Manual Partial Delivery
 // ======================
 bot.onText(/\/sendpartial/, (msg) => {
-    const chatId = msg.chat.id;
-    if (orders[chatId] && orders[chatId].step === 'awaitPayment') {
-        const partialFiles = fs.readdirSync(path.join(__dirname, 'files/partial'));
-        partialFiles.forEach(file => {
-            bot.sendDocument(chatId, path.join(__dirname, 'files/partial', file), { caption: '✅ Here is 40% of your work. Please check and send payment.' });
-        });
-    } else {
-        bot.sendMessage(chatId, 'No active order found to send partial work.');
-    }
+  const chatId = msg.chat.id.toString();
+
+  if (!orders[chatId]) {
+    bot.sendMessage(chatId, "No active order found.");
+    return;
+  }
+
+  if (
+    orders[chatId].step !== "awaitPayment" &&
+    orders[chatId].step !== "inProgress"
+  ) {
+    bot.sendMessage(chatId, "Your order is not ready for partial delivery.");
+    return;
+  }
+
+  const filePath = path.join(__dirname, "files/partial", `${chatId}.pdf`);
+
+  if (fs.existsSync(filePath)) {
+    bot.sendDocument(chatId, filePath, {
+      caption: "✅ Here is 40% of your work. Please check and send payment.",
+    });
+  } else {
+    bot.sendMessage(
+      chatId,
+      "⏳ Your work is still in process. Please check again later.",
+    );
+  }
+});
+
+// ======================
+// document sending
+// ======================
+
+bot.on("document", (msg) => {
+  const ADMIN_ID = process.env.ADMIN_ID;
+  const senderId = msg.from.id.toString();
+
+  // Allow only admin
+  if (senderId !== ADMIN_ID) return;
+
+  const caption = msg.caption;
+
+  if (!caption) {
+    bot.sendMessage(
+      senderId,
+      "⚠️ Write caption like:\n123456789_partial\nOR\n123456789_full",
+    );
+    return;
+  }
+
+  // Format: userId_type
+  const [userId, type] = caption.trim().split("_");
+
+  if (!orders[userId]) {
+    bot.sendMessage(senderId, "❌ No active order found for this user.");
+    return;
+  }
+
+  const fileId = msg.document.file_id;
+
+  if (type === "partial") {
+    orders[userId].partialFileId = fileId;
+    bot.sendMessage(senderId, `✅ Partial file saved for user ${userId}`);
+  } else if (type === "full") {
+    orders[userId].fullFileId = fileId;
+    bot.sendMessage(senderId, `✅ Full file saved for user ${userId}`);
+  } else {
+    bot.sendMessage(
+      senderId,
+      "❌ Wrong format. Use: userId_partial OR userId_full",
+    );
+  }
+});
+
+// ======================
+// screenshot verification
+// ======================
+bot.on("photo", (msg) => {
+  const chatId = msg.chat.id.toString();
+
+  if (!orders[chatId]) return;
+
+  if (orders[chatId].step !== "waitingScreenshot") return;
+
+  const ADMIN_ID = process.env.ADMIN_ID;
+
+  const photoId = msg.photo[msg.photo.length - 1].file_id;
+
+  // Send screenshot to admin
+  bot.sendPhoto(ADMIN_ID, photoId, {
+    caption: `💰 Payment screenshot from user ${chatId}`,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "Approve", callback_data: `approve_${chatId}` },
+          { text: "Reject", callback_data: `rejectpay_${chatId}` },
+        ],
+      ],
+    },
+  });
+
+  bot.sendMessage(
+    chatId,
+    "✅ Screenshot received. Waiting for admin approval.",
+  );
+
+  orders[chatId].step = "verificationPending";
 });
 
 // ======================
 // Express server
 // ======================
 app.listen(PORT, () => {
-    console.log(`Bot running on port ${PORT}`);
+  console.log(`Bot running on port ${PORT}`);
 });
