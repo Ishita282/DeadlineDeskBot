@@ -1,62 +1,110 @@
-const TelegramBot = require("node-telegram-bot-api");
+require('dotenv').config();
+const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
-// Your bot token from BotFather
-const token = "8446951746:AAHTKrIf9NQM62OlegyUa1LZck5BCzXD3S0";
+const token = process.env.BOT_TOKEN;
+const bot = new TelegramBot(token); // no polling
+const app = express();
+app.use(express.json());
 
-// Create bot
-const bot = new TelegramBot(token, { polling: true });
+const PORT = process.env.PORT || 3000;
+const URL = process.env.RENDER_URL;
 
-// Object to store user data temporarily
-const userData = {};
+const orders = {}; // temporary storage of orders
+
+// Webhook endpoint
+app.post(`/bot${token}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+});
+
+// Set webhook (Telegram pushes updates)
+bot.setWebHook(`${URL}/bot${token}`);
+
+// Helper function: get service name
+function getServiceName(num) {
+    return { '1': 'PPT Creation', '2': 'Notes Making', '3': 'Resume Building', '4': 'Assignment Formatting' }[num];
+}
 
 // Start command
 bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(
-    chatId,
-    `👋 Welcome to DeadlineDesk Bot!\n\nWhich service do you want?\n\n1️⃣ PPT Creation\n2️⃣ Notes Making\n3️⃣ Resume Building\n4️⃣ Assignment Formatting`
-  );
-  userData[chatId] = { step: "chooseService" };
+    const chatId = msg.chat.id;
+    orders[chatId] = { step: 'chooseService' };
+    bot.sendMessage(chatId, `👋 Welcome to DeadlineDesk Bot!\n\nChoose a service:\n1️⃣ PPT Creation\n2️⃣ Notes Making\n3️⃣ Resume Building\n4️⃣ Assignment Formatting`);
 });
 
-// Handle messages
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
+// Message handler
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
 
-  // Ignore /start command
-  if (text === "/start") return;
+    // Ignore /start
+    if (text === '/start') return;
 
-  // Initialize if not exist
-  if (!userData[chatId]) userData[chatId] = { step: "chooseService" };
+    // Initialize if not exists
+    if (!orders[chatId]) orders[chatId] = { step: 'chooseService' };
 
-  const step = userData[chatId].step;
+    const step = orders[chatId].step;
 
-  if (step === "chooseService") {
-    if (["1", "2", "3", "4"].includes(text)) {
-      userData[chatId].service = text;
-      if (text === "1") bot.sendMessage(chatId, "Please send the PPT topic and number of slides.");
-      if (text === "2") bot.sendMessage(chatId, "Please send the subject and number of pages for notes.");
-      if (text === "3") bot.sendMessage(chatId, "Please send your resume details or upload your current resume.");
-      if (text === "4") bot.sendMessage(chatId, "Please send the assignment details and pages required.");
-      userData[chatId].step = "getDetails";
-    } else {
-      bot.sendMessage(chatId, "Please choose a valid option: 1, 2, 3, or 4.");
+    // Step 1: Choose service
+    if (step === 'chooseService') {
+        if (['1','2','3','4'].includes(text)) {
+            orders[chatId].service = text;
+            bot.sendMessage(chatId, `You chose *${getServiceName(text)}*.\nPlease send the topic/details for your task.`);
+            orders[chatId].step = 'getDetails';
+        } else {
+            bot.sendMessage(chatId, 'Please choose a valid option: 1,2,3,4');
+        }
+
+    // Step 2: Get task details
+    } else if (step === 'getDetails') {
+        orders[chatId].details = text;
+        bot.sendMessage(chatId, 'Please send the deadline for your task (e.g., 25 Feb 6 PM).');
+        orders[chatId].step = 'getDeadline';
+
+    // Step 3: Get deadline
+    } else if (step === 'getDeadline') {
+        orders[chatId].deadline = text;
+        bot.sendMessage(chatId, '✅ Order received! We will send 40% of your work a day before deadline.');
+        
+        // Notify admin
+        if (process.env.ADMIN_ID) {
+            bot.sendMessage(process.env.ADMIN_ID, `New Order:\nService: ${getServiceName(orders[chatId].service)}\nDetails: ${orders[chatId].details}\nDeadline: ${orders[chatId].deadline}\nUser: ${chatId}`);
+        }
+
+        orders[chatId].step = 'awaitPayment';
     }
-  } else if (step === "getDetails") {
-    userData[chatId].details = text;
-    bot.sendMessage(chatId, "Got it! Please send the deadline for this task (e.g., 25 Feb 6 PM).");
-    userData[chatId].step = "getDeadline";
-  } else if (step === "getDeadline") {
-    userData[chatId].deadline = text;
-    bot.sendMessage(
-      chatId,
-      `✅ Order Received!\n\n*Service:* ${
-        {1:"PPT",2:"Notes",3:"Resume",4:"Assignment"}[userData[chatId].service]
-      }\n*Details:* ${userData[chatId].details}\n*Deadline:* ${userData[chatId].deadline}\n\nWe will contact you shortly for payment.`
-    );
-    // Here you can send notification to yourself or save in Google Sheets
-    console.log(`New Order from ${chatId}:`, userData[chatId]);
-    userData[chatId] = { step: "chooseService" }; // Reset for new order
-  }
+
+    // Step 4: After payment confirmation - send full work (manual)
+    else if (text.toLowerCase() === 'payment done') {
+        if (orders[chatId] && orders[chatId].step === 'awaitPayment') {
+            // Send full work from files/full
+            const fullFiles = fs.readdirSync(path.join(__dirname, 'files/full'));
+            fullFiles.forEach(file => {
+                bot.sendDocument(chatId, path.join(__dirname, 'files/full', file), { caption: '🎉 Here is your full completed work!' });
+            });
+            bot.sendMessage(chatId, 'Thank you for your payment! Your order is complete.');
+            orders[chatId].step = 'completed';
+        }
+    }
+});
+
+// Optional: manual trigger for partial delivery
+bot.onText(/\/sendpartial/, (msg) => {
+    const chatId = msg.chat.id;
+    if (orders[chatId] && orders[chatId].step === 'awaitPayment') {
+        const partialFiles = fs.readdirSync(path.join(__dirname, 'files/partial'));
+        partialFiles.forEach(file => {
+            bot.sendDocument(chatId, path.join(__dirname, 'files/partial', file), { caption: '✅ Here is 40% of your work. Please check and send payment.' });
+        });
+    } else {
+        bot.sendMessage(chatId, 'No active order found to send partial work.');
+    }
+});
+
+// Express server
+app.listen(PORT, () => {
+    console.log(`Bot running on port ${PORT}`);
 });
