@@ -539,22 +539,18 @@ bot.on("document", async (msg) => {
   // Only admin can upload
   if (senderId !== ADMIN_ID) return;
 
-  const caption = msg.caption;
-  if (!caption) {
+  const caption = (msg.caption || "").trim();
+  if (!caption.includes("_")) {
     return bot.sendMessage(
       senderId,
-      "⚠️ Write caption like:\n123456789_partial\nOR\n123456789_full"
+      "⚠️ Wrong format! Use: userId_partial OR userId_full"
     );
   }
 
-  // Safe split: first underscore only
-  const underscoreIndex = caption.indexOf("_");
-  if (underscoreIndex === -1) {
-    return bot.sendMessage(senderId, "❌ Wrong format. Use: userId_partial OR userId_full");
-  }
-
-  const userId = caption.slice(0, underscoreIndex).trim();
-  const type = caption.slice(underscoreIndex + 1).trim();
+  // Split on last underscore (safer)
+  const lastUnderscore = caption.lastIndexOf("_");
+  const userId = caption.slice(0, lastUnderscore).trim();
+  const type = caption.slice(lastUnderscore + 1).trim().toLowerCase();
 
   if (!orders[userId]) {
     return bot.sendMessage(senderId, `❌ No active order found for user ID ${userId}`);
@@ -564,14 +560,10 @@ bot.on("document", async (msg) => {
 
   // ---- PARTIAL FILE ----
   if (type === "partial") {
-    if (orders[userId].partialFileId) {
-      return bot.sendMessage(senderId, `⚠️ Partial file for user ${userId} already exists.`);
-    }
-
     orders[userId].partialFileId = fileId;
     await bot.sendMessage(senderId, `✅ Partial file saved for user ${userId}`);
 
-    // Auto-send if user waiting for partial work
+    // Auto-send partial if user is waiting
     if (["awaitPayment", "inProgress"].includes(orders[userId].step)) {
       await bot.sendDocument(userId, fileId, {
         caption: "✅ Here is 40% of your work. Please check and complete the payment.",
@@ -581,29 +573,25 @@ bot.on("document", async (msg) => {
 
   // ---- FULL FILE ----
   } else if (type === "full") {
-    if (orders[userId].fullFileId) {
-      return bot.sendMessage(senderId, `⚠️ Full file for user ${userId} already exists.`);
-    }
-
     orders[userId].fullFileId = fileId;
     await bot.sendMessage(senderId, `✅ Full file saved for user ${userId}`);
 
-    // Auto-send full file if payment is verified
+    // Auto-send full if payment verified
     if (orders[userId].step === "verificationPending") {
       await bot.sendDocument(userId, fileId, {
         caption: "🎉 Payment verified! Here is your completed work.",
       });
       orders[userId].step = "completed";
-
     } else {
-      // Notify user work is ready but payment pending
+      // Payment not done yet
       await bot.sendMessage(userId, "✅ Your work is ready. Please complete the payment to receive it.");
     }
 
   } else {
-    await bot.sendMessage(senderId, "❌ Wrong format. Use: userId_partial OR userId_full");
+    await bot.sendMessage(senderId, "❌ Wrong format! Use: userId_partial OR userId_full");
   }
 });
+
 
 
 
