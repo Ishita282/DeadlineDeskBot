@@ -3,6 +3,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const QRCode = require("qrcode");
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -128,44 +129,62 @@ bot.on("callback_query", async (callbackQuery) => {
     // =====================================
     // USER: ACCEPT PRICE
     // =====================================
+    // =====================================
+    // USER: ACCEPT PRICE
+    // =====================================
     else if (data.startsWith("price_accept_")) {
       const userId = data.replace("price_accept_", "").toString();
 
-      if (fromId.toString() !== userId)
+      // Check if the callback is from the correct user
+      if (fromId.toString() !== userId) {
         return bot.answerCallbackQuery(callbackQuery.id, {
           text: "❌ Not allowed.",
           show_alert: true,
         });
+      }
 
       const order = orders[userId];
 
-      if (!order || !order.price)
+      // Ensure order exists and price is set
+      if (!order || !order.price) {
         return bot.answerCallbackQuery(callbackQuery.id, {
           text: "⚠️ Price not found.",
           show_alert: true,
         });
+      }
 
       const amount = order.price;
       const upiId = process.env.UPI_ID;
 
-      if (!upiId)
+      if (!upiId) {
         return bot.answerCallbackQuery(callbackQuery.id, {
           text: "⚠️ UPI not configured.",
           show_alert: true,
         });
+      }
 
       const name = process.env.BUSINESS_NAME || "Payment";
+
+      // Create UPI payment link
       const upiLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR`;
 
-      order.step = "awaitPayment";
+      try {
+        // Generate QR code in memory (buffer) — no need to save to file
+        const qrBuffer = await QRCode.toBuffer(upiLink);
 
-      await bot.sendMessage(
-        userId,
-        `💳 Payment Details\n\nAmount: ₹${amount}\nUPI ID: ${upiId}`,
-        {
+        // Update order step
+        order.step = "awaitPayment";
+
+        // Send QR code to user
+        await bot.sendPhoto(userId, qrBuffer, {
+          caption: `💳 Payment Details:
+
+Amount: ₹${amount}
+Payee Name: ${name}
+
+Scan the QR code to pay. Once done, click "Payment Done".`,
           reply_markup: {
             inline_keyboard: [
-              [{ text: "Pay Now", url: upiLink }],
               [
                 {
                   text: "Payment Done",
@@ -174,8 +193,17 @@ bot.on("callback_query", async (callbackQuery) => {
               ],
             ],
           },
-        },
-      );
+        });
+
+        // Answer callback query to remove loading
+        await bot.answerCallbackQuery(callbackQuery.id);
+      } catch (err) {
+        console.error("QR code generation error:", err);
+        await bot.answerCallbackQuery(callbackQuery.id, {
+          text: "⚠️ Failed to generate QR code. Please try again.",
+          show_alert: true,
+        });
+      }
     }
 
     // =====================================
