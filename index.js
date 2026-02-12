@@ -424,9 +424,7 @@ Do you accept this price?`,
     orders[chatId] = { step: "chooseService" };
     return bot.sendMessage(
       chatId,
-      `👋 Welcome to DeadlineDesk Bot!
-
-Choose a service:
+      `Feel free to choose a service:
 1️⃣ PPT Creation
 2️⃣ Notes Making
 3️⃣ Resume Building
@@ -449,7 +447,8 @@ Choose a service:
       return bot.sendMessage(
         chatId,
         `You chose *${getServiceName(text)}*.
-Please send the topic/details (clear description of the project helps the better results). `,
+Please send the topic/details (clear description of the project helps the better results).
+How many pages/slides should it contain. `,
         { parse_mode: "Markdown" },
       );
     }
