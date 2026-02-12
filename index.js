@@ -532,46 +532,66 @@ bot.onText(/\/sendpartial/, (msg) => {
 // document sending
 // ======================
 
-bot.on("document", (msg) => {
+bot.on("document", async (msg) => {
   const ADMIN_ID = process.env.ADMIN_ID;
   const senderId = msg.from.id.toString();
 
-  // Allow only admin
+  // Only admin can upload
   if (senderId !== ADMIN_ID) return;
 
   const caption = msg.caption;
-
   if (!caption) {
-    bot.sendMessage(
+    return bot.sendMessage(
       senderId,
-      "⚠️ Write caption like:\n123456789_partial\nOR\n123456789_full",
+      "⚠️ Write caption like:\n123456789_partial\nOR\n123456789_full"
     );
-    return;
   }
 
-  // Format: userId_type
-  const [userId, type] = caption.trim().split("_");
+  // Split safely
+  const parts = caption.trim().split("_");
+  const userId = parts[0].trim();
+  const type = parts[1]?.trim();
 
   if (!orders[userId]) {
-    bot.sendMessage(senderId, "❌ No active order found for this user.");
-    return;
+    return bot.sendMessage(senderId, `❌ No active order found for user ID ${userId}`);
   }
 
   const fileId = msg.document.file_id;
 
   if (type === "partial") {
     orders[userId].partialFileId = fileId;
-    bot.sendMessage(senderId, `✅ Partial file saved for user ${userId}`);
+    await bot.sendMessage(senderId, `✅ Partial file saved for user ${userId}`);
+
+    // Auto-send partial if user is ready
+    if (orders[userId].step === "awaitPayment" || orders[userId].step === "inProgress") {
+      await bot.sendDocument(userId, fileId, {
+        caption: "✅ Here is 40% of your work. Please check and complete the payment.",
+      });
+    }
+
   } else if (type === "full") {
     orders[userId].fullFileId = fileId;
-    bot.sendMessage(senderId, `✅ Full file saved for user ${userId}`);
+    await bot.sendMessage(senderId, `✅ Full file saved for user ${userId}`);
+
+    // Auto-send full file if payment is already verified
+    if (orders[userId].step === "verificationPending" || orders[userId].step === "awaitUserApproval") {
+      await bot.sendDocument(userId, fileId, {
+        caption: "🎉 Payment verified! Here is your completed work.",
+      });
+      orders[userId].step = "completed";
+    } else {
+      // Let the user know work is ready but payment not done yet
+      await bot.sendMessage(userId, "✅ Your work is ready. Please complete the payment to receive it.");
+    }
+
   } else {
-    bot.sendMessage(
+    await bot.sendMessage(
       senderId,
-      "❌ Wrong format. Use: userId_partial OR userId_full",
+      "❌ Wrong format. Use: userId_partial OR userId_full"
     );
   }
 });
+
 
 // ======================
 // screenshot verification
@@ -587,7 +607,7 @@ bot.on("photo", (msg) => {
 
   const photoId = msg.photo[msg.photo.length - 1].file_id;
 
-  // Send screenshot to admin
+  // After sending screenshot to admin
   bot.sendPhoto(ADMIN_ID, photoId, {
     caption: `💰 Payment screenshot from user ${chatId}`,
     reply_markup: {
@@ -600,11 +620,20 @@ bot.on("photo", (msg) => {
     },
   });
 
-  bot.sendMessage(
-    chatId,
-    "✅ Screenshot received. Waiting for admin approval.",
-  );
+  // Message to user based on work status
+  if (!orders[chatId].workDone) {
+    bot.sendMessage(
+      chatId,
+      "✅ Payment verified. Please wait while your work is in progress...",
+    );
+  } else {
+    bot.sendMessage(chatId, "✅ Payment verified. Here is your project:", {
+      // Example: send document or project file
+      document: orders[chatId].projectFile,
+    });
+  }
 
+  // Update step
   orders[chatId].step = "verificationPending";
 });
 
