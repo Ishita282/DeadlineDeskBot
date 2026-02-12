@@ -57,10 +57,7 @@ function createAdminMessage(chatId) {
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   orders[chatId] = { step: "chooseService" };
-  bot.sendMessage(
-    chatId,
-    `👋 Welcome to DeadlineDesk Bot!\n\nChoose a service:\n1️⃣ PPT Creation\n2️⃣ Notes Making\n3️⃣ Resume Building\n4️⃣ Assignment Formatting`,
-  );
+  bot.sendMessage(chatId, `👋 Welcome to DeadlineDesk Bot!`);
 });
 
 // ======================
@@ -76,7 +73,6 @@ bot.on("callback_query", async (callbackQuery) => {
   const isAdmin = ADMIN_ID && fromId === ADMIN_ID;
 
   try {
-
     // =====================================
     // ADMIN: ACCEPT ORDER
     // =====================================
@@ -99,7 +95,7 @@ bot.on("callback_query", async (callbackQuery) => {
 
       await bot.sendMessage(
         ADMIN_ID,
-        `💰 Enter price for User ID: ${userId}`
+        `💲Please Enter price for User ID: ${userId}`,
       );
     }
 
@@ -118,65 +114,69 @@ bot.on("callback_query", async (callbackQuery) => {
 
       await bot.sendMessage(
         userId,
-        "❌ Sorry, we cannot take this project right now."
+        "❌ Sorry, we cannot take this project right now.",
       );
 
       delete orders[userId];
 
       await bot.editMessageReplyMarkup(
         { inline_keyboard: [] },
-        { chat_id: messageChatId, message_id: messageId }
+        { chat_id: messageChatId, message_id: messageId },
       );
     }
 
     // =====================================
     // USER: ACCEPT PRICE
     // =====================================
-else if (data.startsWith("price_accept_")) {
+    else if (data.startsWith("price_accept_")) {
+      const userId = data.replace("price_accept_", "").toString();
 
-  const userId = data.replace("price_accept_", "").toString();
+      if (fromId.toString() !== userId)
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "❌ Not allowed.",
+          show_alert: true,
+        });
 
-  if (fromId.toString() !== userId)
-    return bot.answerCallbackQuery(callbackQuery.id, {
-      text: "❌ Not allowed.",
-      show_alert: true,
-    });
+      const order = orders[userId];
 
-  const order = orders[userId];
+      if (!order || !order.price)
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "⚠️ Price not found.",
+          show_alert: true,
+        });
 
-  if (!order || !order.price)
-    return bot.answerCallbackQuery(callbackQuery.id, {
-      text: "⚠️ Price not found.",
-      show_alert: true,
-    });
+      const amount = order.price;
+      const upiId = process.env.UPI_ID;
 
-  const amount = order.price;
-  const upiId = process.env.UPI_ID;
+      if (!upiId)
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: "⚠️ UPI not configured.",
+          show_alert: true,
+        });
 
-  if (!upiId)
-    return bot.answerCallbackQuery(callbackQuery.id, {
-      text: "⚠️ UPI not configured.",
-      show_alert: true,
-    });
+      const name = process.env.BUSINESS_NAME || "Payment";
+      const upiLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR`;
 
-  const name = process.env.BUSINESS_NAME || "Payment";
-  const upiLink = `upi://pay?pa=${upiId}&pn=${name}&am=${amount}&cu=INR`;
+      order.step = "awaitPayment";
 
-  order.step = "awaitPayment";
-
-  await bot.sendMessage(
-    userId,
-    `💳 Payment Details\n\nAmount: ₹${amount}\nUPI ID: ${upiId}`,
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Pay Now", url: upiLink }],
-          [{ text: "Payment Done", callback_data: `payment_done_${userId}` }],
-        ],
-      },
+      await bot.sendMessage(
+        userId,
+        `💳 Payment Details\n\nAmount: ₹${amount}\nUPI ID: ${upiId}`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Pay Now", url: upiLink }],
+              [
+                {
+                  text: "Payment Done",
+                  callback_data: `payment_done_${userId}`,
+                },
+              ],
+            ],
+          },
+        },
+      );
     }
-  );
-}
 
     // =====================================
     // USER: REJECT PRICE
@@ -184,21 +184,17 @@ else if (data.startsWith("price_accept_")) {
     else if (data.startsWith("price_reject_")) {
       const userId = data.split("_")[2];
 
-      if (fromId !== userId)
-        return bot.answerCallbackQuery(callbackQuery.id);
+      if (fromId !== userId) return bot.answerCallbackQuery(callbackQuery.id);
 
       if (!orders[userId]) return;
 
       await bot.sendMessage(
         userId,
-        "❌ You rejected the price. Order cancelled."
+        "❌ You rejected the price. Order cancelled.",
       );
 
       // 🔔 Notify Admin
-      await bot.sendMessage(
-        ADMIN_ID,
-        `❌ User ${userId} rejected the price.`
-      );
+      await bot.sendMessage(ADMIN_ID, `❌ User ${userId} rejected the price.`);
 
       delete orders[userId];
     }
@@ -209,8 +205,7 @@ else if (data.startsWith("price_accept_")) {
     else if (data.startsWith("payment_done_")) {
       const userId = data.split("_")[2];
 
-      if (fromId !== userId)
-        return bot.answerCallbackQuery(callbackQuery.id);
+      if (fromId !== userId) return bot.answerCallbackQuery(callbackQuery.id);
 
       if (!orders[userId]) return;
 
@@ -218,13 +213,13 @@ else if (data.startsWith("price_accept_")) {
 
       await bot.sendMessage(
         userId,
-        "📸 Please send a screenshot of your payment for verification."
+        "📸 Please send a screenshot of your payment for verification.",
       );
 
       // 🔔 Notify Admin
       await bot.sendMessage(
         ADMIN_ID,
-        `📥 User ${userId} says payment done. Waiting for screenshot.`
+        `📥 User ${userId} says payment done. Waiting for screenshot.`,
       );
     }
 
@@ -242,24 +237,17 @@ else if (data.startsWith("price_accept_")) {
       if (!orders[userId]) return;
 
       if (!orders[userId].fullFileId)
-        return bot.sendMessage(
-          ADMIN_ID,
-          "⚠️ Full file not uploaded yet."
-        );
+        return bot.sendMessage(ADMIN_ID, "⚠️ Full file not uploaded yet.");
 
-      await bot.sendDocument(
-        userId,
-        orders[userId].fullFileId,
-        {
-          caption: "🎉 Payment verified! Here is your completed work.",
-        }
-      );
+      await bot.sendDocument(userId, orders[userId].fullFileId, {
+        caption: "🎉 Payment verified! Here is your completed work.",
+      });
 
       orders[userId].step = "completed";
 
       await bot.sendMessage(
         ADMIN_ID,
-        `✅ Payment approved. File sent to ${userId}`
+        `✅ Payment approved. File sent to ${userId}`,
       );
 
       delete orders[userId];
@@ -282,12 +270,11 @@ else if (data.startsWith("price_accept_")) {
 
       await bot.sendMessage(
         userId,
-        "❌ Payment rejected. Please send correct screenshot."
+        "❌ Payment rejected. Please send correct screenshot.",
       );
     }
 
     await bot.answerCallbackQuery(callbackQuery.id);
-
   } catch (error) {
     console.error("Callback Error:", error);
 
@@ -297,7 +284,6 @@ else if (data.startsWith("price_accept_")) {
     });
   }
 });
-
 
 // Handle messages
 bot.on("message", async (msg) => {
@@ -459,7 +445,10 @@ Please send the topic/details (clear description of the project helps the better
     orders[chatId].deadline = text;
     orders[chatId].step = "pendingReview";
 
-    await bot.sendMessage(chatId, "✅ Your order is under review. We will notify you once it will approved. Thank you for your support and patience.");
+    await bot.sendMessage(
+      chatId,
+      "✅ Your order is under review. We will notify you once it will approved. Thank you for your support and patience.",
+    );
 
     if (ADMIN_ID) {
       await bot.sendMessage(ADMIN_ID, createAdminMessage(chatId), {
