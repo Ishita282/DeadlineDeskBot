@@ -132,53 +132,51 @@ bot.on("callback_query", async (callbackQuery) => {
     // =====================================
     // USER: ACCEPT PRICE
     // =====================================
-    else if (data.startsWith("price_accept_")) {
-      const userId = data.split("_")[2];
+else if (data.startsWith("price_accept_")) {
 
-      if (fromId !== userId)
-        return bot.answerCallbackQuery(callbackQuery.id, {
-          text: "❌ Not allowed.",
-          show_alert: true,
-        });
+  const userId = data.replace("price_accept_", "").toString();
 
-      if (!orders[userId] || !orders[userId].price)
-        return bot.answerCallbackQuery(callbackQuery.id, {
-          text: "⚠️ Price not found.",
-          show_alert: true,
-        });
+  if (fromId.toString() !== userId)
+    return bot.answerCallbackQuery(callbackQuery.id, {
+      text: "❌ Not allowed.",
+      show_alert: true,
+    });
 
-      const amount = orders[userId].price;
-      const upiId = process.env.UPI_ID;
-      const name = process.env.BUSINESS_NAME || "Payment";
+  const order = orders[userId];
 
-      const upiLink = `upi://pay?pa=${upiId}&pn=${name}&am=${amount}&cu=INR`;
+  if (!order || !order.price)
+    return bot.answerCallbackQuery(callbackQuery.id, {
+      text: "⚠️ Price not found.",
+      show_alert: true,
+    });
 
-      orders[userId].step = "awaitPayment";
+  const amount = order.price;
+  const upiId = process.env.UPI_ID;
 
-      await bot.sendMessage(
-        userId,
-        `💳 *Payment Details*
+  if (!upiId)
+    return bot.answerCallbackQuery(callbackQuery.id, {
+      text: "⚠️ UPI not configured.",
+      show_alert: true,
+    });
 
-Amount: ₹${amount}
-UPI ID: ${upiId}
+  const name = process.env.BUSINESS_NAME || "Payment";
+  const upiLink = `upi://pay?pa=${upiId}&pn=${name}&am=${amount}&cu=INR`;
 
-Click below to pay 👇`,
-        {
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "Pay Now", url: upiLink }],
-              [
-                {
-                  text: "Payment Done",
-                  callback_data: `payment_done_${userId}`,
-                },
-              ],
-            ],
-          },
-        }
-      );
+  order.step = "awaitPayment";
+
+  await bot.sendMessage(
+    userId,
+    `💳 Payment Details\n\nAmount: ₹${amount}\nUPI ID: ${upiId}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "Pay Now", url: upiLink }],
+          [{ text: "Payment Done", callback_data: `payment_done_${userId}` }],
+        ],
+      },
     }
+  );
+}
 
     // =====================================
     // USER: REJECT PRICE
